@@ -13,15 +13,21 @@ import os
 import platform
 import re
 import time
+import argparse
 
 from binaryninja.binaryview import BinaryView
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
 from binaryninja.function import DisassemblySettings, Function
-from binaryninja.interaction import get_directory_name_input
+from binaryninja.interaction import get_directory_name_input, get_text_line_input
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 
+def log_wpcdump(toprint):
+    log_warn('PCDUMP- {}'.format(toprint))
+
+def log_epcdump(toprint):
+    log_error('PCDUMP- {}'.format(toprint))
 
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
@@ -43,11 +49,12 @@ class PseudoCDump(BackgroundTaskThread):
     FILE_SUFFIX = 'c'
     MAX_PATH = 255
 
-    def __init__(self, bv: BinaryView, msg: str, destination_path: str):
+    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str):
         """Inits PseudoCDump class"""
         BackgroundTaskThread.__init__(self, msg, can_cancel=True)
         self.bv = bv
         self.destination_path = destination_path
+        self.functionlist = functionlist_a
 
     def __get_function_name(self, function: Function) -> str:
         """This private method is used to normalize the name of the function
@@ -110,7 +117,7 @@ class PseudoCDump(BackgroundTaskThread):
         self.destination_path = self.__create_directory()
         log_info(f'Number of functions to dump: {len(self.bv.functions)}')
         count = 1
-        for function in self.bv.functions:
+        for function in self.functionlist:
             function_name = self.__get_function_name(function)
             log_info(f'Dumping function {function_name}')
             self.progress = "Dumping Pseudo C: %d/%d" % (
@@ -162,7 +169,7 @@ def force_analysis(bv: BinaryView, function: Function) -> None:
             the current function to be dumped.
     """
     if function is not None and function.analysis_skipped:
-        log_warn(
+        log_wpcdump(
             ''
             f'Analyzing the skipped function {bv.get_symbol_at(function.start)}'
         )
@@ -208,7 +215,7 @@ def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     return (lines_of_code)
 
 
-def dump_pseudo_c(bv: BinaryView, function=None) -> None:
+def dump_pseudo_c(bv: BinaryView) -> None:
     """
     Receives path and instantiates PseudoCDump, and calls PseudoCDump 
     to start the thread in the background.
@@ -218,19 +225,55 @@ def dump_pseudo_c(bv: BinaryView, function=None) -> None:
             and presents a queryable interface of a binary file.
         function: None.
     """
-    destination_path = get_directory_name_input('Destination')
+    
+    args = get_text_line_input("argument list", "args")
+    argparser = argparse.ArgumentParser('pcdump')
+    argparser.add_argument('--func', '-f', help="functions name or address to parse")
+    argparser.add_argument("--range", '-r', help="range, specified as a string separated by a -")
+    argparser.add_argument('--write_location', '-d', help='location to write the output to')
 
-    if destination_path == None:
-        log_error(''
+    args = args.decode("utf-8")
+    args = argparser.parse_args(str(args).split(' '))
+    # if args == []:
+    #     log_epcdump(''
+    #               'PCDUMP- Try again if you change your mind!')
+    #     return
+        
+    destination_path = args.write_location
+    if (destination_path == None) or (destination_path == 'dialog'):
+        destination_path = get_directory_name_input('Destination')
+    
+    if os.path.exists(destination_path) == False:
+        log_epcdump(''
                   'No directory was provided to save the decompiled Pseudo C')
         return
 
-    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', destination_path)
+    functionlist = []
+
+    if args.func != None:
+        targfuncs = bv.get_functions_by_name(args.func)
+        if targfuncs == []:
+            targfuncs = bv.get_functions_containing(int(args.func, 0x10))
+        if targfuncs == []:
+            log_wpcdump('could not find the func {}'.format(args.func))
+        functionlist = targfuncs
+
+    if args.range != None:
+        targstart = int(args.range.split('-')[0], 0x10)
+        targend = int(args.range.split('-')[1], 0x10)
+        for eachfunc in bv.functions:
+            if (eachfunc.start >= targstart) and (eachfunc.start < targend):
+                functionlist.append(eachfunc)
+
+    if (args.func == None) and (args.range == None):
+        functionlist = bv.functions
+
+    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist, destination_path)
     dump.start()
 
 
 """Register the plugin that will be called with an address argument.
 """
-PluginCommand.register_for_address('Pseudo C Dump',
+PluginCommand.register('Pseudo C Dump',
                                    'Dumps Pseudo C for the whole code base',
                                    dump_pseudo_c)
