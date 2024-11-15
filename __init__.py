@@ -29,6 +29,22 @@ def log_wpcdump(toprint):
 def log_epcdump(toprint):
     log_error('PCDUMP- {}'.format(toprint))
 
+def post_pcode_format(pcode_in):
+    pcode_out = pcode_in
+
+    prefix = "#include <stdint.h>\n" \
+    "#include <stdio.h>\n" \
+    "#define nullptr NULL\n" \
+    "#define bool int\n" \
+    "\n"
+
+    # pcode_out = pcode_out.replace('void* ', 'void** ')
+    pcode_out = pcode_out.replace('cond:', 'cond_')
+
+    pcode_out = prefix + pcode_out
+
+    return pcode_out
+
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
 
@@ -123,7 +139,8 @@ class PseudoCDump(BackgroundTaskThread):
             self.progress = "Dumping Pseudo C: %d/%d" % (
                 count, len(self.bv.functions))
             force_analysis(self.bv, function)
-            pcode = get_pseudo_c(self.bv, function)
+            pcode = get_pseudo_c2(self.bv, function)
+            pcode = post_pcode_format(pcode)
             destination = os.path.join(
                 self.destination_path,
                 normalize_destination_file(function_name, self.FILE_SUFFIX))
@@ -177,6 +194,19 @@ def force_analysis(bv: BinaryView, function: Function) -> None:
             FunctionAnalysisSkipOverride.NeverSkipFunctionAnalysis)
         bv.update_analysis_and_wait()
 
+def get_pseudo_c2(bv: BinaryView, function: Function) -> str:
+    # function_l = bv.get_function_at(function_base)
+    function_pc = function.pseudo_c_if_available
+    linelist = []
+    for i in function.hlil.instructions:
+        distext_list = function_pc.get_linear_lines(i)
+        for j in distext_list:
+            distext = distext_list[0]
+            distext_str = str(distext)
+            linelist.append(f'{str(distext_str)}\n')
+    lines_of_code = ''.join(linelist)
+    return (lines_of_code)
+
 
 def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     """Gets the Pseudo C of the function being dumped. It stores every
@@ -229,10 +259,12 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     args = get_text_line_input("argument list", "args")
     argparser = argparse.ArgumentParser('pcdump')
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
-    argparser.add_argument("--range", '-r', help="range, specified as a string separated by a -")
+    argparser.add_argument("--range", help="range, specified as a string separated by a -")
+    argparser.add_argument("-r", help="recursive, if the function has a call pull that too")
     argparser.add_argument('--write_location', '-d', help='location to write the output to')
 
-    args = args.decode("utf-8")
+    if args != None:
+        args = args.decode("utf-8")
     args = argparser.parse_args(str(args).split(' '))
     # if args == []:
     #     log_epcdump(''
