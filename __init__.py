@@ -22,6 +22,9 @@ from binaryninja.interaction import get_directory_name_input, get_text_line_inpu
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
+from binaryninja import TypePrinter
+# print everything with print(TypePrinter.default.print_all_types(bv.types.items(), bv))
+from binaryninja import HighLevelILOperation
 
 def log_wpcdump(toprint):
     log_warn('PCDUMP- {}'.format(toprint))
@@ -124,6 +127,47 @@ class PseudoCDump(BackgroundTaskThread):
 
         return new_directory
 
+    def accumulate_data_refs(self):
+        global_var_dict = {}
+        for func_i in self.functionlist:
+            xref_list = self.bv.get_code_refs_from(func_i.start, func_i, func_i.arch, func_i.total_bytes)
+            for unfilt_ref in xref_list:
+                # already have this ref
+                if unfilt_ref in global_var_dict.keys():
+                    continue
+                # not a data ref, continue
+                data_ref = self.bv.get_data_var_at(unfilt_ref)
+                if data_ref == None:
+                    continue
+                # is a function, continue
+                if self.bv.get_function_at(unfilt_ref) != None:
+                    continue
+                type_prefix = str(data_ref.type)
+                array_count = ''
+                m = re.search(r'(\[0x[0-9a-fA-F]+\])', str(data_ref.type))
+                if m != None:
+                    array_count = m.group(0)
+                    type_prefix = re.sub(r'(\[0x[0-9a-fA-F]+\])', "", str(data_ref.type))
+                name_out = data_ref.name
+                if name_out == None:
+                    name_out = f"data_{hex(unfilt_ref)[2:]}"
+                # have function pointer, function pointer mutation
+                if type_prefix.count('(') > 1:
+                    type_prefix = type_prefix.replace('(*)', f'(*{name_out})')
+                # not a function pointer, do a simple replacement of dangling
+                # asterix
+                else:
+                    type_prefix = type_prefix.replace('(*)', '*')
+                object_line = '{} {}{}'.format(type_prefix, name_out, array_count)
+                global_var_dict[unfilt_ref] = object_line
+        destination = os.path.join(
+            self.destination_path,
+            normalize_destination_file("pcdump_c_object_file", self.FILE_SUFFIX))
+        with open(destination, 'wb') as file:
+            for unfilt_ref in global_var_dict.keys():
+                file.write(bytes(f'{global_var_dict[unfilt_ref]};\n', 'utf-8'))
+        return
+
     def run(self) -> None:
         """Method representing the thread's activity. It invokes the callable
         object passed to the object's constructor as the target argument.
@@ -131,7 +175,8 @@ class PseudoCDump(BackgroundTaskThread):
         file in the provided destination folder.
         """
         self.destination_path = self.__create_directory()
-        log_info(f'Number of functions to dump: {len(self.bv.functions)}')
+        log_info(f'Number of functions we are dumping: {len(self.functionlist)}')
+        log_info(f'Number of functions we could potentially dump: {len(self.bv.functions)}')
         count = 1
         for function in self.functionlist:
             function_name = self.__get_function_name(function)
@@ -140,6 +185,9 @@ class PseudoCDump(BackgroundTaskThread):
                 count, len(self.bv.functions))
             force_analysis(self.bv, function)
             pcode = get_pseudo_c2(self.bv, function)
+            if pcode == None:
+                log_epcdump(f"couldn't get pcode for {function.name}")
+                return 
             pcode = post_pcode_format(pcode)
             destination = os.path.join(
                 self.destination_path,
@@ -147,6 +195,7 @@ class PseudoCDump(BackgroundTaskThread):
             with open(destination, 'wb') as file:
                 file.write(bytes(pcode, 'utf-8'))
             count += 1
+        self.accumulate_data_refs()
         log_alert(f'Done \nFiles saved in {self.destination_path}')
 
 
@@ -197,13 +246,74 @@ def force_analysis(bv: BinaryView, function: Function) -> None:
 def get_pseudo_c2(bv: BinaryView, function: Function) -> str:
     # function_l = bv.get_function_at(function_base)
     function_pc = function.pseudo_c_if_available
+    if function_pc == None:
+        print("function {} needs reanalysis".format(function.name))
+        # works, but is async
+        # function.reanalyze()
+        
+        # maybe sync?
+        function.analysis_skipped = False
+        function.mark_updates_required()
+        bv.update_analysis_and_wait()
+
+        function_pc = function.pseudo_c_if_available
+        if function_pc == None:
+            print("function {} needs analysis".format(function.name))
+            return None
     linelist = []
-    for i in function.hlil.instructions:
-        distext_list = function_pc.get_linear_lines(i)
-        for j in distext_list:
-            distext = distext_list[0]
-            distext_str = str(distext)
-            linelist.append(f'{str(distext_str)}\n')
+    header = f"{function.type.get_string_before_name()} {function.name}{function.type.get_string_after_name()}"
+    linelist.append(f'{str(header)}\n')
+    # fb = str('{')
+    # bb = str('}')
+    # bb_pre = None
+    # hlil_pre = None
+    # bb_stack = []
+    # for hlil_i in function.hlil.instructions:
+    #     bb_cur = hlil_i.il_basic_block
+    #     # if we have a change in the bb and our immediate_dominator is not the top,
+    #     # pop the dominator stack until we see it.
+    #     print("bb_cur is ", bb_cur)
+    #     if bb_cur.immediate_dominator != None:
+    #         print("bb_im ", bb_cur.immediate_dominator)
+    #     if bb_pre != None:
+    #         print("bb_pre is ", bb_pre)
+    #     if bb_cur != bb_pre:
+    #         # The append case, but if we are 
+    #         if (bb_pre == None) or (bb_cur.immediate_dominator == bb_pre):
+    #             print(fb)
+    #             # if we are at an if statement, yes do it. if we branched for
+    #             # no reason, likely are in a do while loop.
+    #             if hlil_pre == HighLevelILOperation.HLIL_IF:
+    #                 linelist.append(f'{fb}\n')
+    #                 bb_stack.append(bb_cur.immediate_dominator)
+    #             elif hlil_i.operation == HighLevelILOperation.HLIL_DO_WHILE:
+
+    #         elif bb_cur.immediate_dominator != bb_pre:
+    #             print(bb_stack)
+    #             if len(bb_stack) != 0:
+    #                 while True:
+    #                     print(bb)
+    #                     linelist.append(f'{bb}\n')
+    #                     bbtop = bb_stack.pop()
+    #                     if bb_cur.immediate_dominator == bbtop:
+    #                         break
+    #         bb_pre = bb_cur
+    #         hlil_pre = hlil_i
+
+    #     distext_list = function_pc.get_linear_lines(hlil_i)
+    #     for j in distext_list:
+    #         distext = j
+    #         distext_str = str(distext)
+    #         linelist.append(f'{str(distext_str)}\n')
+        # print("instruction is ", str(distext_str))
+        # print("instruction bb is ", hlil_i.il_basic_block)
+    # while len(bb_stack) != 0:
+    #     linelist.append(f'{bb}\n')
+    #     bbtop = bb_stack.pop()
+
+    for hlil_i in function_pc.get_linear_lines(function.hlil.root):
+        linelist.append(f'{str(hlil_i)}\n')
+
     lines_of_code = ''.join(linelist)
     return (lines_of_code)
 
@@ -244,6 +354,16 @@ def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     lines_of_code = ''.join(lines)
     return (lines_of_code)
 
+functionlist_g = []
+
+def recurse_append_callee(func):
+    global functionlist_g
+    callees = func.callees
+    for callee in callees:
+        if callee not in functionlist_g:
+            functionlist_g.append(callee)
+            recurse_append_callee(func)
+    return
 
 def dump_pseudo_c(bv: BinaryView) -> None:
     """
@@ -255,16 +375,24 @@ def dump_pseudo_c(bv: BinaryView) -> None:
             and presents a queryable interface of a binary file.
         function: None.
     """
-    
+    global functionlist_g
+    functionlist_g = []
+    allfuncs = False
+
     args = get_text_line_input("argument list", "args")
     argparser = argparse.ArgumentParser('pcdump')
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
     argparser.add_argument("--range", help="range, specified as a string separated by a -")
-    argparser.add_argument("-r", help="recursive, if the function has a call pull that too")
+    argparser.add_argument("--recursive", "-r", action='store_true', help="recursive, if the function has a call pull that too")
     argparser.add_argument('--write_location', '-d', help='location to write the output to')
 
     if args != None:
         args = args.decode("utf-8")
+    else:
+        return
+    # print(args)
+    args = re.sub(r"[ ]+", " ", args)
+    # print(args)
     args = argparser.parse_args(str(args).split(' '))
     # if args == []:
     #     log_epcdump(''
@@ -280,7 +408,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
                   'No directory was provided to save the decompiled Pseudo C')
         return
 
-    functionlist = []
+    functionlist_g = []
 
     if args.func != None:
         targfuncs = bv.get_functions_by_name(args.func)
@@ -288,21 +416,26 @@ def dump_pseudo_c(bv: BinaryView) -> None:
             targfuncs = bv.get_functions_containing(int(args.func, 0x10))
         if targfuncs == []:
             log_wpcdump('could not find the func {}'.format(args.func))
-        functionlist = targfuncs
+        functionlist_g = targfuncs
 
     if args.range != None:
         targstart = int(args.range.split('-')[0], 0x10)
         targend = int(args.range.split('-')[1], 0x10)
         for eachfunc in bv.functions:
             if (eachfunc.start >= targstart) and (eachfunc.start < targend):
-                functionlist.append(eachfunc)
+                functionlist_g.append(eachfunc)
 
     if (args.func == None) and (args.range == None):
-        functionlist = bv.functions
+        functionlist_g = bv.functions
+        allfuncs = True
 
-    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist, destination_path)
+    if (args.recursive == True) and (allfuncs == False):
+        functionlist_g_tmp = functionlist_g
+        for func in functionlist_g_tmp:
+            recurse_append_callee(func)
+
+    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path)
     dump.start()
-
 
 """Register the plugin that will be called with an address argument.
 """
