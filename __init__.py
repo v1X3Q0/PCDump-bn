@@ -32,11 +32,13 @@ def log_wpcdump(toprint):
 def log_epcdump(toprint):
     log_error('PCDUMP- {}'.format(toprint))
 
-def post_pcode_format(pcode_in):
+def post_pcode_format(pcode_in, externlist=[]):
     pcode_out = pcode_in
 
     prefix = "#include <stdint.h>\n" \
     "#include <stdio.h>\n" \
+    "#include \"pseudoc_routines.h\"\n" \
+    "#include \"types_file.h\"\n" \
     "#define nullptr NULL\n" \
     "#define bool int\n" \
     "\n"
@@ -44,9 +46,22 @@ def post_pcode_format(pcode_in):
     # pcode_out = pcode_out.replace('void* ', 'void** ')
     pcode_out = pcode_out.replace('cond:', 'cond_')
 
-    pcode_out = prefix + pcode_out
+    pcode_out = prefix + ''.join(externlist) + pcode_out
 
     return pcode_out
+
+def get_callee_datavars(bv, functionlist):
+    funcl = []
+    for func_i in functionlist:
+        xref_list = bv.get_code_refs_from(func_i.start, func_i, func_i.arch, func_i.total_bytes)
+        for unfilt_ref in xref_list:
+            # is a function, continue
+            df = bv.get_function_at(unfilt_ref)
+            if df == None:
+                continue
+            if df not in funcl:
+                funcl.append(df)
+    return funcl
 
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
@@ -74,6 +89,7 @@ class PseudoCDump(BackgroundTaskThread):
         self.bv = bv
         self.destination_path = destination_path
         self.functionlist = functionlist_a
+        self.functionlist_externdict = {}
 
     def __get_function_name(self, function: Function) -> str:
         """This private method is used to normalize the name of the function
@@ -130,6 +146,7 @@ class PseudoCDump(BackgroundTaskThread):
     def accumulate_data_refs(self):
         global_var_dict = {}
         for func_i in self.functionlist:
+            extern_list = []
             xref_list = self.bv.get_code_refs_from(func_i.start, func_i, func_i.arch, func_i.total_bytes)
             for unfilt_ref in xref_list:
                 # already have this ref
@@ -160,12 +177,58 @@ class PseudoCDump(BackgroundTaskThread):
                     type_prefix = type_prefix.replace('(*)', '*')
                 object_line = '{} {}{}'.format(type_prefix, name_out, array_count)
                 global_var_dict[unfilt_ref] = object_line
+                extern_list.append(f"extern {object_line};\n")
+            # lastly, we need to save this functions externs
+            self.functionlist_externdict[func_i] = extern_list
         destination = os.path.join(
             self.destination_path,
             normalize_destination_file("pcdump_c_object_file", self.FILE_SUFFIX))
+        linelist = []
+        for unfilt_ref in global_var_dict.keys():
+            linelist.append(f'{global_var_dict[unfilt_ref]};\n')
+        pcode_out = post_pcode_format(''.join(linelist))
         with open(destination, 'wb') as file:
-            for unfilt_ref in global_var_dict.keys():
-                file.write(bytes(f'{global_var_dict[unfilt_ref]};\n', 'utf-8'))
+            file.write(bytes(pcode_out, 'utf-8'))
+        return
+    
+    def accumulate_types(self):
+        types_file = TypePrinter.default.print_all_types(self.bv.types.items(), self.bv)
+        destination = os.path.join(
+            self.destination_path,
+            normalize_destination_file("types_file", "h"))
+        with open(destination, 'wb') as file:
+            file.write(bytes(types_file, 'utf-8'))
+        return
+
+    def accumulate_callees(self):
+        linelist = []
+        callee_list = []
+        if self.functionlist != self.bv.functions:
+            # first we have to do a deep copy just in case, so that we don't get
+            # any reference issues
+            for func_i in self.functionlist:
+                callee_list.append(func_i)
+            for func_i in self.functionlist:
+                for callee in func_i.callees:
+                    if callee not in callee_list:
+                        callee_list.append(callee)
+            datavar_list = get_callee_datavars(self.bv, self.functionlist)
+            for datavar in datavar_list:
+                if datavar not in callee_list:
+                    callee_list.append(datavar)
+        else:
+            callee_list = self.bv.functions
+        for func_i in callee_list:
+            header = f"{func_i.type.get_string_before_name()} {func_i.name}{func_i.type.get_string_after_name()}"
+            linelist.append(f'{str(header)};\n')
+        destination = os.path.join(
+            self.destination_path,
+            normalize_destination_file("pseudoc_routines", "h"))
+        routines_out = "#pragma once\n\n"
+        routines_out += "#include \"types_file.h\"\n\n"
+        routines_out += ''.join(linelist)
+        with open(destination, 'wb') as file:
+            file.write(bytes(routines_out, 'utf-8'))
         return
 
     def run(self) -> None:
@@ -178,6 +241,13 @@ class PseudoCDump(BackgroundTaskThread):
         log_info(f'Number of functions we are dumping: {len(self.functionlist)}')
         log_info(f'Number of functions we could potentially dump: {len(self.bv.functions)}')
         count = 1
+        # get globals
+        self.accumulate_data_refs()
+        # get types
+        self.accumulate_types()
+        # get callees to header file
+        self.accumulate_callees()
+        # get functions
         for function in self.functionlist:
             function_name = self.__get_function_name(function)
             log_info(f'Dumping function {function_name}')
@@ -188,14 +258,13 @@ class PseudoCDump(BackgroundTaskThread):
             if pcode == None:
                 log_epcdump(f"couldn't get pcode for {function.name}")
                 return 
-            pcode = post_pcode_format(pcode)
+            pcode = post_pcode_format(pcode, self.functionlist_externdict[function])
             destination = os.path.join(
                 self.destination_path,
                 normalize_destination_file(function_name, self.FILE_SUFFIX))
             with open(destination, 'wb') as file:
                 file.write(bytes(pcode, 'utf-8'))
             count += 1
-        self.accumulate_data_refs()
         log_alert(f'Done \nFiles saved in {self.destination_path}')
 
 
@@ -245,9 +314,10 @@ def force_analysis(bv: BinaryView, function: Function) -> None:
 
 def get_pseudo_c2(bv: BinaryView, function: Function) -> str:
     # function_l = bv.get_function_at(function_base)
+    attempts = 0
     function_pc = function.pseudo_c_if_available
-    if function_pc == None:
-        print("function {} needs reanalysis".format(function.name))
+    while function_pc == None:
+        print("function {} reanalysis, try: {}".format(function.name, attempts + 1))
         # works, but is async
         # function.reanalyze()
         
@@ -257,60 +327,13 @@ def get_pseudo_c2(bv: BinaryView, function: Function) -> str:
         bv.update_analysis_and_wait()
 
         function_pc = function.pseudo_c_if_available
-        if function_pc == None:
-            print("function {} needs analysis".format(function.name))
+        if attempts == 10:
             return None
+        time.sleep(1)
+        attempts+=1
     linelist = []
     header = f"{function.type.get_string_before_name()} {function.name}{function.type.get_string_after_name()}"
     linelist.append(f'{str(header)}\n')
-    # fb = str('{')
-    # bb = str('}')
-    # bb_pre = None
-    # hlil_pre = None
-    # bb_stack = []
-    # for hlil_i in function.hlil.instructions:
-    #     bb_cur = hlil_i.il_basic_block
-    #     # if we have a change in the bb and our immediate_dominator is not the top,
-    #     # pop the dominator stack until we see it.
-    #     print("bb_cur is ", bb_cur)
-    #     if bb_cur.immediate_dominator != None:
-    #         print("bb_im ", bb_cur.immediate_dominator)
-    #     if bb_pre != None:
-    #         print("bb_pre is ", bb_pre)
-    #     if bb_cur != bb_pre:
-    #         # The append case, but if we are 
-    #         if (bb_pre == None) or (bb_cur.immediate_dominator == bb_pre):
-    #             print(fb)
-    #             # if we are at an if statement, yes do it. if we branched for
-    #             # no reason, likely are in a do while loop.
-    #             if hlil_pre == HighLevelILOperation.HLIL_IF:
-    #                 linelist.append(f'{fb}\n')
-    #                 bb_stack.append(bb_cur.immediate_dominator)
-    #             elif hlil_i.operation == HighLevelILOperation.HLIL_DO_WHILE:
-
-    #         elif bb_cur.immediate_dominator != bb_pre:
-    #             print(bb_stack)
-    #             if len(bb_stack) != 0:
-    #                 while True:
-    #                     print(bb)
-    #                     linelist.append(f'{bb}\n')
-    #                     bbtop = bb_stack.pop()
-    #                     if bb_cur.immediate_dominator == bbtop:
-    #                         break
-    #         bb_pre = bb_cur
-    #         hlil_pre = hlil_i
-
-    #     distext_list = function_pc.get_linear_lines(hlil_i)
-    #     for j in distext_list:
-    #         distext = j
-    #         distext_str = str(distext)
-    #         linelist.append(f'{str(distext_str)}\n')
-        # print("instruction is ", str(distext_str))
-        # print("instruction bb is ", hlil_i.il_basic_block)
-    # while len(bb_stack) != 0:
-    #     linelist.append(f'{bb}\n')
-    #     bbtop = bb_stack.pop()
-
     for hlil_i in function_pc.get_linear_lines(function.hlil.root):
         linelist.append(f'{str(hlil_i)}\n')
 
@@ -429,10 +452,12 @@ def dump_pseudo_c(bv: BinaryView) -> None:
         functionlist_g = bv.functions
         allfuncs = True
 
+    # if we are getting some resursive stuff
     if (args.recursive == True) and (allfuncs == False):
         functionlist_g_tmp = functionlist_g
         for func in functionlist_g_tmp:
             recurse_append_callee(func)
+        functionlist_g += get_callee_datavars(bv, functionlist_g)
 
     dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path)
     dump.start()
