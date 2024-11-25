@@ -14,6 +14,7 @@ import platform
 import re
 import time
 import argparse
+import json
 
 from binaryninja.binaryview import BinaryView
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
@@ -26,6 +27,11 @@ from binaryninja import TypePrinter
 # print everything with print(TypePrinter.default.print_all_types(bv.types.items(), bv))
 from binaryninja import HighLevelILOperation
 
+JSON_STATS_FILE="pc_dumpstats.json"
+BN_TYPES_FILE="types_file.h"
+BN_PCFUNC_FILE="pseudoc_routines.h"
+BN_PCOBJ_FILE="pcdump_c_object_file.c"
+
 def log_wpcdump(toprint):
     log_warn('PCDUMP- {}'.format(toprint))
 
@@ -37,8 +43,8 @@ def post_pcode_format(pcode_in, externlist=[]):
 
     prefix = "#include <stdint.h>\n" \
     "#include <stdio.h>\n" \
-    "#include \"pseudoc_routines.h\"\n" \
-    "#include \"types_file.h\"\n" \
+    "#include \"" + BN_PCFUNC_FILE + "\"\n" \
+    "#include \"" + BN_TYPES_FILE + "\"\n" \
     "#define nullptr NULL\n" \
     "#define bool int\n" \
     "\n"
@@ -65,13 +71,16 @@ def get_callee_datavars(bv, functionlist):
 
 def mark_all_functions_analyzed(bv, functionlist):
     for func_i in functionlist:
-        func_i.analysis_skip_override = (FunctionAnalysisSkipOverride.NeverSkipFunctionAnalysis)
+        # func_i.analysis_skip_override = (FunctionAnalysisSkipOverride.NeverSkipFunctionAnalysis)
+        func_i.analysis_skipped = False
+        func_i.mark_updates_required()
     bv.update_analysis_and_wait()
-    wait_counter = 0
     for func_i in functionlist:
-        function_pc = function.pseudo_c_if_available
+        wait_counter = 0
+        function_pc = func_i.pseudo_c
         while function_pc == None:
             time.sleep(1)
+            function_pc = func_i.pseudo_c
             log_info(f'waiting for analysis to finish {wait_counter}')
             wait_counter += 1
             # detault wait counter, 600 seconds
@@ -204,8 +213,7 @@ class PseudoCDump(BackgroundTaskThread):
             # lastly, we need to save this functions externs
             self.functionlist_externdict[func_i] = extern_list
         destination = os.path.join(
-            self.destination_path,
-            normalize_destination_file("pcdump_c_object_file", self.FILE_SUFFIX))
+            self.destination_path, BN_PCOBJ_FILE)
         linelist = []
         for unfilt_ref in global_var_dict.keys():
             linelist.append(f'{global_var_dict[unfilt_ref]};\n')
@@ -217,8 +225,7 @@ class PseudoCDump(BackgroundTaskThread):
     def accumulate_types(self):
         types_file = TypePrinter.default.print_all_types(self.bv.types.items(), self.bv)
         destination = os.path.join(
-            self.destination_path,
-            normalize_destination_file("types_file", "h"))
+            self.destination_path, BN_TYPES_FILE)
         with open(destination, 'wb') as file:
             file.write(bytes(types_file, 'utf-8'))
         return
@@ -247,10 +254,9 @@ class PseudoCDump(BackgroundTaskThread):
             header = f"{func_i.type.get_string_before_name()} {func_i.name}{func_i.type.get_string_after_name()}"
             linelist.append(f'{str(header)};\n')
         destination = os.path.join(
-            self.destination_path,
-            normalize_destination_file("pseudoc_routines", "h"))
+            self.destination_path, BN_PCFUNC_FILE)
         routines_out = "#pragma once\n\n"
-        routines_out += "#include \"types_file.h\"\n\n"
+        routines_out += "#include \"" + BN_TYPES_FILE + "\"\n\n"
         routines_out += ''.join(linelist)
         with open(destination, 'wb') as file:
             file.write(bytes(routines_out, 'utf-8'))
@@ -262,11 +268,32 @@ class PseudoCDump(BackgroundTaskThread):
         Additionally, writes the content of each function into a <function_name>.c
         file in the provided destination folder.
         """
-        if self.args.solo !=  True:
+        if (self.args.solo == False) and (self.args.dirless == False):
             self.destination_path = self.__create_directory()
         log_info(f'Number of functions we are dumping: {len(self.functionlist)}')
         log_info(f'Number of functions we could potentially dump: {len(self.bv.functions)}')
         count = 1
+        # pull dump stats if there are any
+        # dump stats has
+            # functions
+            # includes
+            # objects
+        # jsstatfile = os.path.join(self.destination_path, JSON_STATS_FILE)
+        # if os.path.exists(jsstatfile):
+        #     with open(jsstatfile, "r") as statfile:
+        #         crashdict = json.loads(statfile.read())
+        #         funclist_old = []
+        #         for func_i in crashdict.functions:
+        #             func_tmp = self.bv.get_function_at(func_i)
+        #             # if function is in the functionlist, i'll remove it
+        #             if func_tmp in self.functionlist:
+        #                 self.functionlist.remove(func_tmp)
+        #         for inc_i in crashdict.includes:
+        #             if inc_tmp in self.includelist:
+        #                 self.includelist.remove(inc_tmp)
+        #         for obj_i in crashdict.objects:
+        #             if obj_tmp in self.objectlist:
+        #                 self.objectlist.remove(obj_tmp)
         if self.args.solo == False:
             # get globals, output is objects in a c file
             self.accumulate_data_refs()
@@ -436,7 +463,8 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
     argparser.add_argument("--range", help="range, specified as a string separated by a -")
     argparser.add_argument("--recursive", "-r", action='store_true', help="recursive, if the function has a call pull that too")
-    argparser.add_argument('--write_location', '-d', help='location to write the output to')
+    argparser.add_argument('--write_location', '-w', help='location to write the output to')
+    argparser.add_argument('--dirless', '-d', action='store_true', help="write and don\'t create directory")
     argparser.add_argument('-s', '--solo', action='store_true', help='location to write the output to')
 
     if args != None:
