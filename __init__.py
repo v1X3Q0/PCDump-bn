@@ -63,6 +63,22 @@ def get_callee_datavars(bv, functionlist):
                 funcl.append(df)
     return funcl
 
+def mark_all_functions_analyzed(bv, functionlist):
+    for func_i in functionlist:
+        func_i.analysis_skip_override = (FunctionAnalysisSkipOverride.NeverSkipFunctionAnalysis)
+    bv.update_analysis_and_wait()
+    wait_counter = 0
+    for func_i in functionlist:
+        function_pc = function.pseudo_c_if_available
+        while function_pc == None:
+            time.sleep(1)
+            log_info(f'waiting for analysis to finish {wait_counter}')
+            wait_counter += 1
+            # detault wait counter, 600 seconds
+            if wait_counter > 600:
+                break
+    return
+
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
 
@@ -83,13 +99,14 @@ class PseudoCDump(BackgroundTaskThread):
     FILE_SUFFIX = 'c'
     MAX_PATH = 255
 
-    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str):
+    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str, args):
         """Inits PseudoCDump class"""
         BackgroundTaskThread.__init__(self, msg, can_cancel=True)
         self.bv = bv
         self.destination_path = destination_path
         self.functionlist = functionlist_a
         self.functionlist_externdict = {}
+        self.args = args
 
     def __get_function_name(self, function: Function) -> str:
         """This private method is used to normalize the name of the function
@@ -159,6 +176,12 @@ class PseudoCDump(BackgroundTaskThread):
                 # is a function, continue
                 if self.bv.get_function_at(unfilt_ref) != None:
                     continue
+                # this is the filtration step, clean the name up if it has one that would
+                # otherwise be illegal
+                if data_ref.name != None:
+                    badname = re.match(r'@([1-9]+)', data_ref.name)
+                    if badname != None:
+                        data_ref.name = 'global_{}'.format(badname.group(1))
                 type_prefix = str(data_ref.type)
                 array_count = ''
                 m = re.search(r'(\[0x[0-9a-fA-F]+\])', str(data_ref.type))
@@ -203,16 +226,18 @@ class PseudoCDump(BackgroundTaskThread):
     def accumulate_callees(self):
         linelist = []
         callee_list = []
-        if self.functionlist != self.bv.functions:
+        if (self.functionlist != self.bv.functions) or (self.args.recursive == False):
             # first we have to do a deep copy just in case, so that we don't get
             # any reference issues
             for func_i in self.functionlist:
                 callee_list.append(func_i)
+            # straight append all the callees out
             for func_i in self.functionlist:
                 for callee in func_i.callees:
                     if callee not in callee_list:
                         callee_list.append(callee)
             datavar_list = get_callee_datavars(self.bv, self.functionlist)
+            # deep copy results
             for datavar in datavar_list:
                 if datavar not in callee_list:
                     callee_list.append(datavar)
@@ -230,23 +255,27 @@ class PseudoCDump(BackgroundTaskThread):
         with open(destination, 'wb') as file:
             file.write(bytes(routines_out, 'utf-8'))
         return
-
+    
     def run(self) -> None:
         """Method representing the thread's activity. It invokes the callable
         object passed to the object's constructor as the target argument.
         Additionally, writes the content of each function into a <function_name>.c
         file in the provided destination folder.
         """
-        self.destination_path = self.__create_directory()
+        if self.args.solo !=  True:
+            self.destination_path = self.__create_directory()
         log_info(f'Number of functions we are dumping: {len(self.functionlist)}')
         log_info(f'Number of functions we could potentially dump: {len(self.bv.functions)}')
         count = 1
-        # get globals
-        self.accumulate_data_refs()
-        # get types
-        self.accumulate_types()
-        # get callees to header file
-        self.accumulate_callees()
+        if self.args.solo == False:
+            # get globals, output is objects in a c file
+            self.accumulate_data_refs()
+            # get types, output is types in a header file
+            self.accumulate_types()
+            # get callees to header file, output is includes in a header file
+            self.accumulate_callees()
+        # Mark all functions to be ready
+        mark_all_functions_analyzed(self.bv, self.functionlist)
         # get functions
         for function in self.functionlist:
             function_name = self.__get_function_name(function)
@@ -408,6 +437,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     argparser.add_argument("--range", help="range, specified as a string separated by a -")
     argparser.add_argument("--recursive", "-r", action='store_true', help="recursive, if the function has a call pull that too")
     argparser.add_argument('--write_location', '-d', help='location to write the output to')
+    argparser.add_argument('-s', '--solo', action='store_true', help='location to write the output to')
 
     if args != None:
         args = args.decode("utf-8")
@@ -459,7 +489,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
             recurse_append_callee(func)
         functionlist_g += get_callee_datavars(bv, functionlist_g)
 
-    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path)
+    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args)
     dump.start()
 
 """Register the plugin that will be called with an address argument.
