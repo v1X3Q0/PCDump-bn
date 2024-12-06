@@ -14,6 +14,10 @@ BN_PCFUNC_FILE="pseudoc_routines.h"
 BN_PCOBJ_FILE="pcdump_c_object_file.c"
 BN_PALIAS_FILE="pseudoc_aliases.h"
 
+BN_AL="aliaslist"
+BN_BL="blacklist"
+BN_FL="funclist"
+
 functionlist_g = []
 
 def fix_bad_datavars(bv):
@@ -30,15 +34,34 @@ def log_wpcdump(toprint):
 def log_epcdump(toprint):
     log_error('PCDUMP- {}'.format(toprint))
 
+def key_in_funcdict(funcname_in, funcdict_a):
+    for funcregex in funcdict_a.keys():
+        fmatch = re.match(funcregex, funcname_in)
+        if fmatch != None:
+            return [funcname_in, funcdict_a[funcregex]]
+    return None
+
+def functionlist_append(funcname_in, functionlist_a, aliaslist_a=None, blacklist_a=None):
+    # false cases, it is in the aliaslist, blacklist or the functionlist
+    if (aliaslist_a != None) and (key_in_funcdict(funcname_in, aliaslist_a) != None):
+        return functionlist_a
+    if (blacklist_a != None) and (funcname_in in blacklist_a):
+        return functionlist_a
+    # true case, its not in any so add the function
+    return functionlist_a.append(funcname_in)
+
 def post_pcode_format(pcode_in, externlist=[]):
     pcode_out = pcode_in
 
     prefix = "#include <stdint.h>\n" \
     "#include <stdio.h>\n" \
+    "#include <string.h>\n" \
     "#include \"" + BN_PCFUNC_FILE + "\"\n" \
     "#include \"" + BN_TYPES_FILE + "\"\n" \
     "#define nullptr NULL\n" \
     "#define bool int\n" \
+    "#define true 1\n"\
+    "#define false 0\n"\
     "\n"
 
     # pcode_out = pcode_out.replace('void* ', 'void** ')
@@ -189,12 +212,12 @@ def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     lines_of_code = ''.join(lines)
     return (lines_of_code)
 
-def recurse_append_callee(func):
+def recurse_append_callee(func, aliaslist_a, blacklist_a):
     global functionlist_g
     callees = func.callees
     for callee in callees:
         if callee not in functionlist_g:
-            functionlist_g.append(callee)
+            functionlist_g = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
             recurse_append_callee(func)
     return
 

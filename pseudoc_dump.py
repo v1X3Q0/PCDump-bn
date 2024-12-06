@@ -3,6 +3,7 @@ import ntpath
 import os
 import time
 import re
+import json
 
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 from binaryninja.binaryview import BinaryView
@@ -10,9 +11,9 @@ from binaryninja.function import DisassemblySettings, Function
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja import TypePrinter
 
-from util import force_analysis, get_callee_datavars, get_pseudo_c2, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format
-from util import BN_PALIAS_FILE, BN_PCFUNC_FILE, BN_PCOBJ_FILE, BN_TYPES_FILE
-from util import functionlist_g
+from .util import force_analysis, get_callee_datavars, get_pseudo_c2, key_in_funcdict, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format
+from .util import BN_AL, BN_BL, BN_FL, BN_PALIAS_FILE, BN_PCFUNC_FILE, BN_PCOBJ_FILE, BN_TYPES_FILE, JSON_STATS_FILE
+from .util import functionlist_g
 
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
@@ -34,7 +35,7 @@ class PseudoCDump(BackgroundTaskThread):
     FILE_SUFFIX = 'c'
     MAX_PATH = 255
 
-    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str, args):
+    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str, args, funclistold_a: dict, aliaslist_a: dict, blacklist_a: dict):
         """Inits PseudoCDump class"""
         BackgroundTaskThread.__init__(self, msg, can_cancel=True)
         self.bv = bv
@@ -42,6 +43,9 @@ class PseudoCDump(BackgroundTaskThread):
         self.functionlist = functionlist_a
         self.functionlist_externdict = {}
         self.args = args
+        self.funclistold = funclistold_a
+        self.aliaslist = aliaslist_a
+        self.blacklist = blacklist_a
 
     def __get_function_name(self, function: Function) -> str:
         """This private method is used to normalize the name of the function
@@ -95,6 +99,7 @@ class PseudoCDump(BackgroundTaskThread):
 
         return new_directory
 
+    # obtain the data refs, globals and such from the routines.
     def accumulate_data_refs(self):
         global_var_dict = {}
         for func_i in self.functionlist:
@@ -117,6 +122,8 @@ class PseudoCDump(BackgroundTaskThread):
                     badname = re.match(r'@([1-9]+)', data_ref.name)
                     if badname != None:
                         data_ref.name = 'global_{}'.format(badname.group(1))
+                    elif '$' in str(data_ref.name):
+                        data_ref.name = str(data_ref.name).replace('$', '_')
                 type_prefix = str(data_ref.type)
                 array_count = ''
                 m = re.search(r'(\[0x[0-9a-fA-F]+\])', str(data_ref.type))
@@ -161,6 +168,10 @@ class PseudoCDump(BackgroundTaskThread):
     def accumulate_callees(self):
         linelist = []
         callee_list = []
+        alias_list = []
+        # if we are just doing one function, or we are not pulling recursively.
+        # cause if we are pulling recursively, we likely already have all the includes
+        # from the recursive pull
         if (self.functionlist != self.bv.functions) or (self.args.recursive == False):
             # first we have to do a deep copy just in case, so that we don't get
             # any reference issues
@@ -175,9 +186,20 @@ class PseudoCDump(BackgroundTaskThread):
             # deep copy results
             for datavar in datavar_list:
                 if datavar not in callee_list:
-                    callee_list.append(datavar)
-        else:
+                    callee_list.append(datavar)            
+        elif self.functionlist == self.bv.functions:
             callee_list = self.bv.functions
+        # remove the aliases and blacklisted entries
+        for func in callee_list:
+            aliastmp = key_in_funcdict(func.name, self.aliaslist)
+            if aliastmp != None:
+                callee_list.remove(func)
+                alias_list.append(aliastmp)
+            elif func.name in self.blacklist:
+                callee_list.remove(func)
+        for aliastmp in alias_list:
+            macro_i = f"#define {aliastmp[0]} {aliastmp[1]}"
+            linelist.append(f'{str(macro_i)}\n')
         for func_i in callee_list:
             header = f"{func_i.type.get_string_before_name()} {func_i.name}{func_i.type.get_string_after_name()}"
             linelist.append(f'{str(header)};\n')
@@ -196,6 +218,7 @@ class PseudoCDump(BackgroundTaskThread):
         Additionally, writes the content of each function into a <function_name>.c
         file in the provided destination folder.
         """
+        crashdict = {}
         if (self.args.solo == False) and (self.args.dirless == False):
             self.destination_path = self.__create_directory()
         log_info(f'Number of functions we are dumping: {len(self.functionlist)}')
@@ -212,6 +235,10 @@ class PseudoCDump(BackgroundTaskThread):
         mark_all_functions_analyzed(self.bv, self.functionlist)
         # get functions
         for function in self.functionlist:
+            if (self.args.nooverwrite == True) and (function.start in self.funclistold):
+                continue
+            elif (function.start not in self.funclistold):
+                self.funclistold.append(function.start)
             function_name = self.__get_function_name(function)
             log_info(f'Dumping function {function_name}')
             self.progress = "Dumping Pseudo C: %d/%d" % (
@@ -228,5 +255,11 @@ class PseudoCDump(BackgroundTaskThread):
             with open(destination, 'wb') as file:
                 file.write(bytes(pcode, 'utf-8'))
             count += 1
+        crashdict[BN_AL] = self.aliaslist
+        crashdict[BN_BL] = self.blacklist
+        crashdict[BN_FL] = self.funclistold
+        jsstatfile = os.path.join(self.destination_path, JSON_STATS_FILE)
+        with open(jsstatfile, "w") as statfile:
+            json.dump(crashdict, statfile)
         log_alert(f'Done \nFiles saved in {self.destination_path}')
 

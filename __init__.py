@@ -27,10 +27,10 @@ from binaryninja import TypePrinter
 # print everything with print(TypePrinter.default.print_all_types(bv.types.items(), bv))
 from binaryninja import HighLevelILOperation
 
-from util import log_epcdump, get_callee_datavars, recurse_append_callee, log_wpcdump
-from util import JSON_STATS_FILE
-from util import functionlist_g
-from pseudoc_dump import PseudoCDump
+from .util import functionlist_append, get_callee_datavars, log_epcdump, log_wpcdump, recurse_append_callee
+from .util import BN_AL, BN_BL, BN_FL, JSON_STATS_FILE
+from .util import functionlist_g
+from .pseudoc_dump import PseudoCDump
 
 def dump_pseudo_c(bv: BinaryView) -> None:
     """
@@ -46,7 +46,8 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     functionlist_g = []
     allfuncs = False
     aliaslist = {}
-    blacklist = {}
+    blacklist = []
+    funclistold = []
 
     args = get_text_line_input("argument list", "args")
     argparser = argparse.ArgumentParser('pcdump')
@@ -55,7 +56,10 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     argparser.add_argument("--recursive", "-r", action='store_true', help="recursive, if the function has a call pull that too")
     argparser.add_argument('--write_location', '-w', help='location to write the output to')
     argparser.add_argument('--dirless', '-d', action='store_true', help="write and don\'t create directory")
-    argparser.add_argument('-s', '--solo', action='store_true', help='location to write the output to')
+    argparser.add_argument('--solo', '-s', action='store_true', help='location to write the output to')
+    argparser.add_argument('--nooverwrite', '-n', action='store_true', help="default action" \
+                           "is to overwrite the function files. if this flag is set, do not" \
+                            "overwrite those files")
 
     if args != None:
         args = args.decode("utf-8")
@@ -89,25 +93,27 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     if os.path.exists(jsstatfile):
         with open(jsstatfile, "r") as statfile:
             crashdict = json.loads(statfile.read())
-            aliaslist = crashdict.aliaslist
-            blacklist = crashdict.blacklist
-            funclist = crashdict.funclist
-    funclist_old = []
-    for func_i in crashdict.functions:
-        func_tmp = self.bv.get_function_at(func_i)
-        # if function is in the functionlist, i'll remove it
-        if func_tmp in self.functionlist:
-            self.functionlist.remove(func_tmp)
-    for inc_i in crashdict.includes:
-        if inc_tmp in self.includelist:
-            self.includelist.remove(inc_tmp)
-    for obj_i in crashdict.objects:
-        if obj_tmp in self.objectlist:
-            self.objectlist.remove(obj_tmp)
-    for alias_i in crashdict.aliases:
-        alias_i
-    for black_i in crashdict.blacklist:
-        black_i
+            if BN_AL in crashdict:
+                aliaslist = crashdict[BN_AL]
+            if BN_BL in crashdict:
+                blacklist = crashdict[BN_BL]
+            if BN_FL in crashdict:
+                funclistold = crashdict[BN_FL]
+    # for func_i in crashdict.functions:
+    #     func_tmp = self.bv.get_function_at(func_i)
+    #     # if function is in the functionlist, i'll remove it
+    #     if func_tmp in self.functionlist:
+    #         self.functionlist.remove(func_tmp)
+    # for inc_i in crashdict.includes:
+    #     if inc_tmp in self.includelist:
+    #         self.includelist.remove(inc_tmp)
+    # for obj_i in crashdict.objects:
+    #     if obj_tmp in self.objectlist:
+    #         self.objectlist.remove(obj_tmp)
+    # for alias_i in crashdict.aliases:
+    #     alias_i
+    # for black_i in crashdict.blacklist:
+    #     black_i
 
 
     if args.func != None:
@@ -123,7 +129,8 @@ def dump_pseudo_c(bv: BinaryView) -> None:
         targend = int(args.range.split('-')[1], 0x10)
         for eachfunc in bv.functions:
             if (eachfunc.start >= targstart) and (eachfunc.start < targend):
-                functionlist_g.append(eachfunc)
+                functionlist_g = functionlist_append(eachfunc, functionlist_g, aliaslist, blacklist)
+                # functionlist_g.append(eachfunc)
 
     if (args.func == None) and (args.range == None):
         functionlist_g = bv.functions
@@ -136,7 +143,8 @@ def dump_pseudo_c(bv: BinaryView) -> None:
             recurse_append_callee(func)
         functionlist_g += get_callee_datavars(bv, functionlist_g)
 
-    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args)
+    dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args,
+                       funclistold, aliaslist, blacklist)
     dump.start()
 
 """Register the plugin that will be called with an address argument.
