@@ -140,7 +140,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     if (args.recursive == True) and (allfuncs == False):
         functionlist_g_tmp = functionlist_g
         for func in functionlist_g_tmp:
-            recurse_append_callee(func)
+            recurse_append_callee(func, aliaslist, blacklist)
         functionlist_g += get_callee_datavars(bv, functionlist_g)
 
     dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args,
