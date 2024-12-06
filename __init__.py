@@ -49,17 +49,19 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     blacklist = []
     funclistold = []
 
-    args = get_text_line_input("argument list", "args")
+    args = get_text_line_input("PseudoCDump argument list", "args")
     argparser = argparse.ArgumentParser('pcdump')
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
     argparser.add_argument("--range", help="range, specified as a string separated by a -")
-    argparser.add_argument("--recursive", "-r", action='store_true', help="recursive, if the function has a call pull that too")
+    argparser.add_argument("--recursive", "-r", default=0, help="recursive, if the function has a call pull that too"\
+                           "default recursion depth 0 means keep going down")
     argparser.add_argument('--write_location', '-w', help='location to write the output to')
     argparser.add_argument('--dirless', '-d', action='store_true', help="write and don\'t create directory")
     argparser.add_argument('--solo', '-s', action='store_true', help='location to write the output to')
     argparser.add_argument('--nooverwrite', '-n', action='store_true', help="default action" \
                            "is to overwrite the function files. if this flag is set, do not" \
                             "overwrite those files")
+    argparser.add_argument('--cmake', action='store_true', help='generate a cmake file with the sources')
 
     if args != None:
         args = args.decode("utf-8")
@@ -137,11 +139,10 @@ def dump_pseudo_c(bv: BinaryView) -> None:
         allfuncs = True
 
     # if we are getting some resursive stuff
-    if (args.recursive == True) and (allfuncs == False):
+    if (args.recursive != None) and (allfuncs == False):
         functionlist_g_tmp = functionlist_g
         for func in functionlist_g_tmp:
-            recurse_append_callee(func, aliaslist, blacklist)
-        functionlist_g += get_callee_datavars(bv, functionlist_g)
+            recurse_append_callee(bv, func, aliaslist, blacklist)
 
     dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args,
                        funclistold, aliaslist, blacklist)

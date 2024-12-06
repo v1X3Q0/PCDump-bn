@@ -1,12 +1,15 @@
 import re
 import time
 import platform
+import os
 
 from binaryninja.binaryview import BinaryView
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.function import DisassemblySettings, Function
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
+
+from cmake_dummy import cmake_dummy
 
 JSON_STATS_FILE="pc_dumpstats.json"
 BN_TYPES_FILE="types_file.h"
@@ -212,12 +215,24 @@ def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     lines_of_code = ''.join(lines)
     return (lines_of_code)
 
-def recurse_append_callee(func, aliaslist_a, blacklist_a):
+def recurse_append_callee(bv, func, aliaslist_a, blacklist_a):
     global functionlist_g
+    # first iterate blatant callees
     callees = func.callees
     for callee in callees:
         if callee not in functionlist_g:
             functionlist_g = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
-            recurse_append_callee(func)
+            recurse_append_callee(bv, func, aliaslist_a, blacklist_a)
+    # then do dataref callees
+    datareflist = get_callee_datavars(bv, [func])
+    for callee in datareflist:
+        if callee not in functionlist_g:
+            functionlist_g = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
+            recurse_append_callee(bv, func, aliaslist_a, blacklist_a)
     return
 
+def generate_cmake(path: str, objlist: list):
+    cmake_current = cmake_dummy.format(os.path.basename(path), ' '.join(objlist))
+    f = open(os.path.join(path, 'CMakeLists.txt'), 'w')
+    f.write(cmake_current)
+    f.close()

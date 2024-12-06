@@ -11,7 +11,7 @@ from binaryninja.function import DisassemblySettings, Function
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja import TypePrinter
 
-from .util import force_analysis, get_callee_datavars, get_pseudo_c2, key_in_funcdict, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format
+from .util import force_analysis, generate_cmake, get_callee_datavars, get_pseudo_c2, key_in_funcdict, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format
 from .util import BN_AL, BN_BL, BN_FL, BN_PALIAS_FILE, BN_PCFUNC_FILE, BN_PCOBJ_FILE, BN_TYPES_FILE, JSON_STATS_FILE
 from .util import functionlist_g
 
@@ -172,9 +172,10 @@ class PseudoCDump(BackgroundTaskThread):
         # if we are just doing one function, or we are not pulling recursively.
         # cause if we are pulling recursively, we likely already have all the includes
         # from the recursive pull
-        if (self.functionlist != self.bv.functions) or (self.args.recursive == False):
-            # first we have to do a deep copy just in case, so that we don't get
+        if (self.functionlist != self.bv.functions) or (self.args.recursive == None):
+            # first we have to do a DEEP COPY just in case, so that we don't get
             # any reference issues
+            # calle_list = self.functionlist
             for func_i in self.functionlist:
                 callee_list.append(func_i)
             # straight append all the callees out
@@ -258,6 +259,12 @@ class PseudoCDump(BackgroundTaskThread):
         crashdict[BN_AL] = self.aliaslist
         crashdict[BN_BL] = self.blacklist
         crashdict[BN_FL] = self.funclistold
+        cmakesouces = []
+        if self.args.cmake == True:
+            for function_addr in self.funclistold:
+                cmakesouces.append(self.bv.get_function_at(function_addr).name + '.c')
+            cmakesouces.append(BN_PCOBJ_FILE)
+            generate_cmake(self.destination_path, cmakesouces)
         jsstatfile = os.path.join(self.destination_path, JSON_STATS_FILE)
         with open(jsstatfile, "w") as statfile:
             json.dump(crashdict, statfile)
