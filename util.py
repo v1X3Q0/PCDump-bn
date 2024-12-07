@@ -9,7 +9,7 @@ from binaryninja.function import DisassemblySettings, Function
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
 
-from cmake_dummy import cmake_dummy
+from .cmake_dummy import cmake_dummy
 
 JSON_STATS_FILE="pc_dumpstats.json"
 BN_TYPES_FILE="types_file.h"
@@ -21,7 +21,7 @@ BN_AL="aliaslist"
 BN_BL="blacklist"
 BN_FL="funclist"
 
-functionlist_g = []
+functionlist_g=[]
 
 def fix_bad_datavars(bv):
     for datavar_key in bv.data_vars.keys():
@@ -44,14 +44,15 @@ def key_in_funcdict(funcname_in, funcdict_a):
             return [funcname_in, funcdict_a[funcregex]]
     return None
 
-def functionlist_append(funcname_in, functionlist_a, aliaslist_a=None, blacklist_a=None):
+def functionlist_append(funcname_in: Function, functionlist_a: list, aliaslist_a=None, blacklist_a=None):
     # false cases, it is in the aliaslist, blacklist or the functionlist
-    if (aliaslist_a != None) and (key_in_funcdict(funcname_in, aliaslist_a) != None):
-        return functionlist_a
-    if (blacklist_a != None) and (funcname_in in blacklist_a):
-        return functionlist_a
+    if (aliaslist_a != None) and (key_in_funcdict(funcname_in.name, aliaslist_a) != None):
+        return functionlist_a, False
+    if (blacklist_a != None) and (funcname_in.name in blacklist_a):
+        return functionlist_a, False
     # true case, its not in any so add the function
-    return functionlist_a.append(funcname_in)
+    functionlist_a.append(funcname_in)
+    return functionlist_a, True
 
 def post_pcode_format(pcode_in, externlist=[]):
     pcode_out = pcode_in
@@ -215,21 +216,34 @@ def get_pseudo_c(bv: BinaryView, function: Function) -> str:
     lines_of_code = ''.join(lines)
     return (lines_of_code)
 
-def recurse_append_callee(bv, func, aliaslist_a, blacklist_a):
+def recurse_append_callee(recurse_targ: int, recurse_iter: int, bv: BinaryView, func: Function, aliaslist_a: dict, blacklist_a: list):
     global functionlist_g
     # first iterate blatant callees
     callees = func.callees
+
+    if (recurse_targ == recurse_iter) and (recurse_targ != 0):
+        return
+    recurse_iter += 1
     for callee in callees:
         if callee not in functionlist_g:
-            functionlist_g = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
-            recurse_append_callee(bv, func, aliaslist_a, blacklist_a)
+            functionlist_g, appable = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
+            if appable == True:
+                recurse_append_callee(recurse_targ, recurse_iter, bv, callee, aliaslist_a, blacklist_a)
     # then do dataref callees
     datareflist = get_callee_datavars(bv, [func])
     for callee in datareflist:
         if callee not in functionlist_g:
-            functionlist_g = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
-            recurse_append_callee(bv, func, aliaslist_a, blacklist_a)
+            functionlist_g, appable = functionlist_append(callee, functionlist_g, aliaslist_a, blacklist_a)
+            if appable == True:
+                recurse_append_callee(recurse_targ, recurse_iter, bv, callee, aliaslist_a, blacklist_a)
     return
+
+def recurse_append_callee_p(funclist_in: int, recurse_targ: int, recurse_iter: int, bv: BinaryView, func: Function, aliaslist_a: dict, blacklist_a: list):
+    global functionlist_g
+    functionlist_g=funclist_in
+    recurse_append_callee(recurse_targ, recurse_iter, bv, func, aliaslist_a, blacklist_a)
+    return functionlist_g
+
 
 def generate_cmake(path: str, objlist: list):
     cmake_current = cmake_dummy.format(os.path.basename(path), ' '.join(objlist))

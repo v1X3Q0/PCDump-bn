@@ -27,7 +27,7 @@ from binaryninja import TypePrinter
 # print everything with print(TypePrinter.default.print_all_types(bv.types.items(), bv))
 from binaryninja import HighLevelILOperation
 
-from .util import functionlist_append, get_callee_datavars, log_epcdump, log_wpcdump, recurse_append_callee
+from .util import functionlist_append, get_callee_datavars, log_epcdump, log_wpcdump, recurse_append_callee_p
 from .util import BN_AL, BN_BL, BN_FL, JSON_STATS_FILE
 from .util import functionlist_g
 from .pseudoc_dump import PseudoCDump
@@ -53,8 +53,8 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     argparser = argparse.ArgumentParser('pcdump')
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
     argparser.add_argument("--range", help="range, specified as a string separated by a -")
-    argparser.add_argument("--recursive", "-r", default=0, help="recursive, if the function has a call pull that too"\
-                           "default recursion depth 0 means keep going down")
+    argparser.add_argument("--recursive", "-r", type=int, help="recursive, if the function has a call pull that too"\
+                           "recursion depth 0 means keep going down")
     argparser.add_argument('--write_location', '-w', help='location to write the output to')
     argparser.add_argument('--dirless', '-d', action='store_true', help="write and don\'t create directory")
     argparser.add_argument('--solo', '-s', action='store_true', help='location to write the output to')
@@ -131,7 +131,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
         targend = int(args.range.split('-')[1], 0x10)
         for eachfunc in bv.functions:
             if (eachfunc.start >= targstart) and (eachfunc.start < targend):
-                functionlist_g = functionlist_append(eachfunc, functionlist_g, aliaslist, blacklist)
+                functionlist_g, _ = functionlist_append(eachfunc, functionlist_g, aliaslist, blacklist)
                 # functionlist_g.append(eachfunc)
 
     if (args.func == None) and (args.range == None):
@@ -140,9 +140,10 @@ def dump_pseudo_c(bv: BinaryView) -> None:
 
     # if we are getting some resursive stuff
     if (args.recursive != None) and (allfuncs == False):
-        functionlist_g_tmp = functionlist_g
+        functionlist_g_tmp = functionlist_g.copy()
         for func in functionlist_g_tmp:
-            recurse_append_callee(bv, func, aliaslist, blacklist)
+            print("recursing on ", func)
+            functionlist_g = recurse_append_callee_p(functionlist_g, args.recursive, 0, bv, func, aliaslist, blacklist)
 
     dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args,
                        funclistold, aliaslist, blacklist)

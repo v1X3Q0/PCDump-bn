@@ -175,9 +175,7 @@ class PseudoCDump(BackgroundTaskThread):
         if (self.functionlist != self.bv.functions) or (self.args.recursive == None):
             # first we have to do a DEEP COPY just in case, so that we don't get
             # any reference issues
-            # calle_list = self.functionlist
-            for func_i in self.functionlist:
-                callee_list.append(func_i)
+            callee_list = self.functionlist.copy()
             # straight append all the callees out
             for func_i in self.functionlist:
                 for callee in func_i.callees:
