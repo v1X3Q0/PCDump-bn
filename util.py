@@ -39,7 +39,7 @@ def log_epcdump(toprint):
 
 def key_in_funcdict(funcname_in, funcdict_a):
     for funcregex in funcdict_a.keys():
-        fmatch = re.match(funcregex, funcname_in)
+        fmatch = re.search(funcregex, funcname_in)
         if fmatch != None:
             return [funcname_in, funcdict_a[funcregex]]
     return None

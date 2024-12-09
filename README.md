@@ -39,6 +39,7 @@ What will be dumped are c files. As of November 11th 2024, the unfortunate cavea
 
 - Binja often types as `void*` and then dereferences it.
   - The solution I had for this was just find and replace `void*` with `void**`, for double dereferences this fails. Casting to some intuitive `size_t` may also be a good solution.
+  - but due to some variables being double dereferenced, haven't found a solid solution to this yet.
 - Binja won't be afraid to add a float to a pointer then deref.
 - Binja will name some conditional variables like `cond:N`.
   - The solution I found was to find and replace all instances of `cond:` with `cond_`.
@@ -95,6 +96,10 @@ The following are the components of the statistics file named `pc_dumpstats.json
 
 - Its definitely in the `TODO` to implement some of these in the file generation process.
 - The other `TODO` would be to do header tracking, so that the generated c files can have all their includes resolved for eachother.
+- Get binja to stop creating local variables of type void.
+- correct decompilation so that there are no more `char cont* const` types that are written to. These guys are annoying.
+- Have sidekick stop generating function names with `<>` in the name.
+- Cast function pointers to their interpretted types in pseudo-c view before the call.
 
 ## Minimum Version
 
