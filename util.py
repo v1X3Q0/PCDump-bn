@@ -8,13 +8,14 @@ from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.function import DisassemblySettings, Function
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
+from binaryninja import TypeClass
 
-from .cmake_dummy import cmake_dummy
+from .file_dummy import cmake_dummy
 
 JSON_STATS_FILE="pc_dumpstats.json"
 BN_TYPES_FILE="types_file.h"
 BN_PCFUNC_FILE="pseudoc_routines.h"
-BN_PCOBJ_FILE="pcdump_c_object_file.c"
+BN_PCOBJ_FILE="pcdump_c_object_file"
 BN_PALIAS_FILE="pseudoc_aliases.h"
 
 BN_AL="aliaslist"
@@ -22,6 +23,7 @@ BN_BL="blacklist"
 BN_FL="funclist"
 
 functionlist_g=[]
+typelist_g=[]
 
 def fix_bad_datavars(bv):
     for datavar_key in bv.data_vars.keys():
@@ -243,6 +245,33 @@ def recurse_append_callee_p(funclist_in: int, recurse_targ: int, recurse_iter: i
     functionlist_g=funclist_in
     recurse_append_callee(recurse_targ, recurse_iter, bv, func, aliaslist_a, blacklist_a)
     return functionlist_g
+
+
+def recursive_grab_types(bv: BinaryView, typein):
+    global typelist_g
+
+    typeinname = typein.registered_name.name
+    for eachtype in typein.members:
+        try:
+            eachtype_t = bv.get_type_by_id(eachtype.type.type_id)
+            eachtype_name = eachtype_t.registered_name.name
+            if (eachtype_t.type_class == TypeClass.StructureTypeClass) and (eachtype_name not in typelist_g):
+                typelist_g = [eachtype_name] + typelist_g
+                recursive_grab_types(bv, eachtype_t)
+        except:
+            # probably not a struct, so just continue
+            # log_warn(eachtype.name)
+            continue
+    if typeinname not in typelist_g:
+        typelist_g.append(typeinname)
+    return
+
+def recursive_grab_types_p(bv: BinaryView, typein, typelist_l=typelist_g):
+    global typelist_g
+
+    typelist_g = typelist_l
+    recursive_grab_types(bv, typein)
+    return typelist_g
 
 
 def generate_cmake(path: str, objlist: list):

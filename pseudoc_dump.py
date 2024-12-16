@@ -9,11 +9,13 @@ from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 from binaryninja.binaryview import BinaryView
 from binaryninja.function import DisassemblySettings, Function
 from binaryninja.log import log_alert, log_error, log_info, log_warn
-from binaryninja import TypePrinter
+from binaryninja import TypePrinter, TypeClass
 
-from .util import force_analysis, generate_cmake, get_callee_datavars, get_pseudo_c2, key_in_funcdict, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format
+from .util import force_analysis, generate_cmake, get_callee_datavars, get_pseudo_c2, key_in_funcdict, log_epcdump, mark_all_functions_analyzed, normalize_destination_file, post_pcode_format, recursive_grab_types_p
 from .util import BN_AL, BN_BL, BN_FL, BN_PALIAS_FILE, BN_PCFUNC_FILE, BN_PCOBJ_FILE, BN_TYPES_FILE, JSON_STATS_FILE
 from .util import functionlist_g
+
+from .file_dummy import types_macroprefix
 
 class PseudoCDump(BackgroundTaskThread):
     """PseudoCDump class definition.
@@ -32,10 +34,9 @@ class PseudoCDump(BackgroundTaskThread):
 
         MAX_PATH: Maximum path length (255).            
     """
-    FILE_SUFFIX = 'c'
     MAX_PATH = 255
 
-    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str, args, funclistold_a: dict, aliaslist_a: dict, blacklist_a: dict):
+    def __init__(self, bv: BinaryView, msg: str, functionlist_a: list, destination_path: str, args, funclistold_a: dict, aliaslist_a: dict, blacklist_a: dict, file_extension_a='c'):
         """Inits PseudoCDump class"""
         BackgroundTaskThread.__init__(self, msg, can_cancel=True)
         self.bv = bv
@@ -46,6 +47,7 @@ class PseudoCDump(BackgroundTaskThread):
         self.funclistold = funclistold_a
         self.aliaslist = aliaslist_a
         self.blacklist = blacklist_a
+        self.FILE_SUFFIX = file_extension_a
 
     def __get_function_name(self, function: Function) -> str:
         """This private method is used to normalize the name of the function
@@ -146,7 +148,7 @@ class PseudoCDump(BackgroundTaskThread):
             # lastly, we need to save this functions externs
             self.functionlist_externdict[func_i] = extern_list
         destination = os.path.join(
-            self.destination_path, BN_PCOBJ_FILE)
+            self.destination_path, BN_PCOBJ_FILE + '.' + self.FILE_SUFFIX)
         linelist = []
         for unfilt_ref in global_var_dict.keys():
             linelist.append(f'{global_var_dict[unfilt_ref]};\n')
@@ -156,7 +158,58 @@ class PseudoCDump(BackgroundTaskThread):
         return
     
     def accumulate_types(self):
-        types_file = TypePrinter.default.print_all_types(self.bv.types.items(), self.bv)
+        # types_file = TypePrinter.default.print_all_types(self.bv.types.items(), self.bv)
+                
+        typelist_l = []
+        types_file = types_macroprefix
+        # push macros and binja typedefs, as of 4.2
+
+        # first pass, pull enums
+        for eachtype in self.bv.types:
+            eachtype_t = eachtype[1]
+            if eachtype_t.type_class == TypeClass.EnumerationTypeClass:
+                typelist_l.append(eachtype)
+        
+        # second pass, pull structs
+        structlist_l = []
+        for eachtype in self.bv.types:
+            eachtype_t = eachtype[1]
+            thistype = self.bv.get_type_by_name(eachtype[0])
+            if eachtype_t.type_class == TypeClass.StructureTypeClass:
+                structlist_l = recursive_grab_types_p(self.bv, thistype, structlist_l)
+
+        # finally, append all the enums
+        for eachtype in typelist_l:
+            linestmp=TypePrinter.default.get_type_lines(eachtype[1], self.bv.type_container, eachtype[0])
+            linesstr=[]
+            # combine the lines
+            for line in linestmp:
+                badline = re.match(r'(enum [a-zA-Z_][a-zA-Z0-9_]+) \:.*', str(line))
+                if badline != None:
+                    line = badline.group(1)
+                linesstr.append(str(line))
+            types_file += '\n'.join(linesstr)
+            types_file += '\n\n'
+        
+        # then the structures
+        for eachtype in structlist_l:
+            eachtype_t = self.bv.get_type_by_name(eachtype)
+            linestmp=TypePrinter.default.get_type_lines(eachtype_t, self.bv.type_container, eachtype)
+            linesstr=[]
+            # combine the lines
+            for index in range(0, len(linestmp)):
+                line = linestmp[index]
+
+                if (re.search(r'__offset\(0x[0-9a-fA-F]+\)', str(line)) != None) or (str(line) == ''):
+                    curoff = line.offset
+                    nextoff = linestmp[index + 1].offset
+                    if curoff == nextoff:
+                        continue
+                    line = f'\tchar __padding{str(curoff)}[{nextoff - curoff}];'
+                linesstr.append(str(line))
+            types_file += '\n'.join(linesstr)
+            types_file += '\n\n'
+
         destination = os.path.join(
             self.destination_path, BN_TYPES_FILE)
         with open(destination, 'wb') as file:
@@ -260,7 +313,7 @@ class PseudoCDump(BackgroundTaskThread):
         cmakesouces = []
         if self.args.cmake == True:
             for function_addr in self.funclistold:
-                cmakesouces.append(self.bv.get_function_at(function_addr).name + '.c')
+                cmakesouces.append(self.bv.get_function_at(function_addr).name + self.FILE_SUFFIX)
             cmakesouces.append(BN_PCOBJ_FILE)
             generate_cmake(self.destination_path, cmakesouces)
         jsstatfile = os.path.join(self.destination_path, JSON_STATS_FILE)

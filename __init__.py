@@ -62,6 +62,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
                            "is to overwrite the function files. if this flag is set, do not" \
                             "overwrite those files")
     argparser.add_argument('--cmake', action='store_true', help='generate a cmake file with the sources')
+    argparser.add_argument('--cpp', action='store_true', help='make cpp')
 
     if args != None:
         args = args.decode("utf-8")
@@ -144,9 +145,13 @@ def dump_pseudo_c(bv: BinaryView) -> None:
         for func in functionlist_g_tmp:
             print("recursing on ", func)
             functionlist_g = recurse_append_callee_p(functionlist_g, args.recursive, 0, bv, func, aliaslist, blacklist)
+    
+    fex = 'c'
+    if args.cpp == True:
+        fex='cpp'
 
     dump = PseudoCDump(bv, 'Starting the Pseudo C Dump...', functionlist_g, destination_path, args,
-                       funclistold, aliaslist, blacklist)
+                       funclistold, aliaslist, blacklist, fex)
     dump.start()
 
 """Register the plugin that will be called with an address argument.
