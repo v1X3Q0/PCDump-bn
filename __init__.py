@@ -15,11 +15,12 @@ import re
 import time
 import argparse
 import json
+from types import SimpleNamespace
 
 from binaryninja.binaryview import BinaryView
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
 from binaryninja.function import DisassemblySettings, Function
-from binaryninja.interaction import get_directory_name_input, get_text_line_input
+from binaryninja.interaction import get_directory_name_input, get_text_line_input, IntegerField, TextLineField, ChoiceField, get_form_input, SeparatorField, OpenFileNameField, CheckboxField, AddressField
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
@@ -32,23 +33,7 @@ from .util import BN_AL, BN_BL, BN_FL, JSON_STATS_FILE
 from .util import functionlist_g
 from .pseudoc_dump import PseudoCDump
 
-def dump_pseudo_c(bv: BinaryView) -> None:
-    """
-    Receives path and instantiates PseudoCDump, and calls PseudoCDump 
-    to start the thread in the background.
-
-    Args:
-        bv: A Binary Ninja BinaryView instance which is a view on binary data,
-            and presents a queryable interface of a binary file.
-        function: None.
-    """
-    global functionlist_g
-    functionlist_g = []
-    allfuncs = False
-    aliaslist = {}
-    blacklist = []
-    funclistold = []
-
+def cmdline_getargs(bv: BinaryView):
     args = get_text_line_input("PseudoCDump argument list", "args")
     argparser = argparse.ArgumentParser('pcdump')
     argparser.add_argument('--func', '-f', help="functions name or address to parse")
@@ -72,11 +57,61 @@ def dump_pseudo_c(bv: BinaryView) -> None:
     args = re.sub(r"[ ]+", " ", args)
     # print(args)
     args = argparser.parse_args(str(args).split(' '))
+    return args
+
+def gui_getargs(bv: BinaryView, addr: int) -> None:
+    """
+    Receives path and instantiates PseudoCDump, and calls PseudoCDump 
+    to start the thread in the background.
+
+    Args:
+        bv: A Binary Ninja BinaryView instance which is a view on binary data,
+            and presents a queryable interface of a binary file.
+        function: None.
+    """
+    global functionlist_g
+    functionlist_g = []
+    allfuncs = False
+    aliaslist = {}
+    blacklist = []
+    funclistold = []
+
     # if args == []:
     #     log_epcdump(''
     #               'PCDUMP- Try again if you change your mind!')
     #     return
-        
+
+    input_list = []
+    funcfield = CheckboxField(f'Pull just function {hex(addr)}', default=False)
+    input_list.append(funcfield)
+    range_field = TextLineField('range field delineated by -', default=None)
+    input_list.append(range_field)
+    recurse_depth = IntegerField('recurse depth', default=-1)
+    input_list.append(recurse_depth)
+    pcdump_out = OpenFileNameField('location to write')
+    input_list.append(pcdump_out)
+    dirless_arg = CheckboxField("write to dirty directory", default=False)
+    input_list.append(dirless_arg)
+    soloprocess = CheckboxField("solo, don't accumulate deps", default=False)
+    input_list.append(soloprocess)
+    nooverwrite = CheckboxField("do not overwrite function files", default=False)
+    input_list.append(nooverwrite)
+    gencmake = CheckboxField("generate cmake file", default=False)
+    input_list.append(gencmake)
+    makecpp = CheckboxField("generate as cpp files", default=False)
+    input_list.append(makecpp)
+    get_form_input(input_list, "pcdump")
+
+    if funcfield.result == True:
+        funcout = addr
+    else:
+        funcout = None
+
+    args = SimpleNamespace(func=funcout, range=range_field.result, recursive=recurse_depth.result, write_location=pcdump_out.result, dirless=dirless_arg.result, solo=soloprocess.result, nooverwrite=nooverwrite.result, cmake=gencmake.result, cpp=makecpp.result)
+    return args
+
+def dump_pseudo_c(bv: BinaryView, addr: int) -> None:
+    args = gui_getargs(bv, addr)
     destination_path = args.write_location
     if (destination_path == None) or (destination_path == 'dialog'):
         destination_path = get_directory_name_input('Destination')
@@ -127,7 +162,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
             log_wpcdump('could not find the func {}'.format(args.func))
         functionlist_g = targfuncs
 
-    if args.range != None:
+    if args.range != -1:
         targstart = int(args.range.split('-')[0], 0x10)
         targend = int(args.range.split('-')[1], 0x10)
         for eachfunc in bv.functions:
@@ -135,7 +170,7 @@ def dump_pseudo_c(bv: BinaryView) -> None:
                 functionlist_g, _ = functionlist_append(eachfunc, functionlist_g, aliaslist, blacklist)
                 # functionlist_g.append(eachfunc)
 
-    if (args.func == None) and (args.range == None):
+    if (args.func == None) and (args.range == -1):
         functionlist_g = bv.functions
         allfuncs = True
 
@@ -156,6 +191,6 @@ def dump_pseudo_c(bv: BinaryView) -> None:
 
 """Register the plugin that will be called with an address argument.
 """
-PluginCommand.register('Pseudo C Dump',
+PluginCommand.register_for_address('Pseudo C Dump',
                                    'Dumps Pseudo C for the whole code base',
                                    dump_pseudo_c)
