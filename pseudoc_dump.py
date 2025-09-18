@@ -225,7 +225,7 @@ class PseudoCDump(BackgroundTaskThread):
         # if we are just doing one function, or we are not pulling recursively.
         # cause if we are pulling recursively, we likely already have all the includes
         # from the recursive pull
-        if (self.functionlist != self.bv.functions) or (self.args.recursive == None):
+        if (self.functionlist != self.bv.functions) or (self.args.recursive == -1):
             # first we have to do a DEEP COPY just in case, so that we don't get
             # any reference issues
             callee_list = self.functionlist.copy()
@@ -299,8 +299,11 @@ class PseudoCDump(BackgroundTaskThread):
             pcode = get_pseudo_c2(self.bv, function)
             if pcode == None:
                 log_epcdump(f"couldn't get pcode for {function.name}")
-                return 
-            pcode = post_pcode_format(pcode, self.functionlist_externdict[function])
+                return
+            externlistlocal = []
+            if function in self.functionlist_externdict:
+                externlistlocal = self.functionlist_externdict[function]
+            pcode = post_pcode_format(pcode, externlistlocal)
             destination = os.path.join(
                 self.destination_path,
                 normalize_destination_file(function_name, self.FILE_SUFFIX))

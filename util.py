@@ -123,6 +123,13 @@ def normalize_destination_file(destination_file: str,
     Return:
         The string containing the normalized file name.
     """
+    # we are gonna add a little extra sauce for normalization, for
+    # cstuff we want to get the smallest classname and name the routine
+    # class_function
+    if '(' in destination_file:
+        indexofp = destination_file.find("(")
+        destination_file = destination_file[0:indexofp]
+    destination_file = destination_file.replace('::', '_')
     if 'Windows' in platform.system():
         normalized_destination_file = '.'.join(
             (re.sub(r'[><:"/\\|\?\*]', '_',

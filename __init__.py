@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from binaryninja.binaryview import BinaryView
 from binaryninja.enums import DisassemblyOption, FunctionAnalysisSkipOverride
 from binaryninja.function import DisassemblySettings, Function
-from binaryninja.interaction import get_directory_name_input, get_text_line_input, IntegerField, TextLineField, ChoiceField, get_form_input, SeparatorField, OpenFileNameField, CheckboxField, AddressField
+from binaryninja.interaction import get_directory_name_input, get_text_line_input, IntegerField, TextLineField, ChoiceField, get_form_input, SeparatorField, OpenFileNameField, CheckboxField, AddressField, DirectoryNameField
 from binaryninja.lineardisassembly import LinearViewCursor, LinearViewObject
 from binaryninja.log import log_alert, log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
@@ -42,7 +42,7 @@ def cmdline_getargs(bv: BinaryView):
                            "recursion depth 0 means keep going down")
     argparser.add_argument('--write_location', '-w', help='location to write the output to')
     argparser.add_argument('--dirless', '-d', action='store_true', help="write and don\'t create directory")
-    argparser.add_argument('--solo', '-s', action='store_true', help='location to write the output to')
+    argparser.add_argument('--solo', '-s', action='store_true', help='solo, don\'t accumulate deps')
     argparser.add_argument('--nooverwrite', '-n', action='store_true', help="default action" \
                            "is to overwrite the function files. if this flag is set, do not" \
                             "overwrite those files")
@@ -81,20 +81,27 @@ def gui_getargs(bv: BinaryView, addr: int) -> None:
     #               'PCDUMP- Try again if you change your mind!')
     #     return
 
+    funcaddrl = bv.get_functions_containing(addr)
+    if len(funcaddrl) > 0:
+        funclocal = funcaddrl[0]
+
     input_list = []
-    funcfield = CheckboxField(f'Pull just function {hex(addr)}', default=False)
+    funcfield = CheckboxField(f'Pull just function {hex(funclocal.start)}', default=False)
     input_list.append(funcfield)
-    range_field = TextLineField('range field delineated by -', default=None)
+    range_field = TextLineField('range field delineated by -', default='')
     input_list.append(range_field)
     recurse_depth = IntegerField('recurse depth', default=-1)
     input_list.append(recurse_depth)
-    pcdump_out = OpenFileNameField('location to write')
+    pcdump_out = DirectoryNameField('location to write')
     input_list.append(pcdump_out)
-    dirless_arg = CheckboxField("write to dirty directory", default=False)
+    dirless_arg = CheckboxField("write and don\'t create directory", default=False)
     input_list.append(dirless_arg)
     soloprocess = CheckboxField("solo, don't accumulate deps", default=False)
     input_list.append(soloprocess)
-    nooverwrite = CheckboxField("do not overwrite function files", default=False)
+    nooverwrite = CheckboxField(
+        "default action is to overwrite the \n" \
+        "function files. if this flag is set,\n"
+        "do not overwrite those files", default=False)
     input_list.append(nooverwrite)
     gencmake = CheckboxField("generate cmake file", default=False)
     input_list.append(gencmake)
@@ -102,8 +109,11 @@ def gui_getargs(bv: BinaryView, addr: int) -> None:
     input_list.append(makecpp)
     get_form_input(input_list, "pcdump")
 
+    if recurse_depth.result == None:
+        return None
+
     if funcfield.result == True:
-        funcout = addr
+        funcout = funclocal.name
     else:
         funcout = None
 
@@ -112,6 +122,8 @@ def gui_getargs(bv: BinaryView, addr: int) -> None:
 
 def dump_pseudo_c(bv: BinaryView, addr: int) -> None:
     args = gui_getargs(bv, addr)
+    if args == None:
+        return None
     destination_path = args.write_location
     if (destination_path == None) or (destination_path == 'dialog'):
         destination_path = get_directory_name_input('Destination')
@@ -162,7 +174,7 @@ def dump_pseudo_c(bv: BinaryView, addr: int) -> None:
             log_wpcdump('could not find the func {}'.format(args.func))
         functionlist_g = targfuncs
 
-    if args.range != -1:
+    if args.range != '':
         targstart = int(args.range.split('-')[0], 0x10)
         targend = int(args.range.split('-')[1], 0x10)
         for eachfunc in bv.functions:
@@ -170,12 +182,12 @@ def dump_pseudo_c(bv: BinaryView, addr: int) -> None:
                 functionlist_g, _ = functionlist_append(eachfunc, functionlist_g, aliaslist, blacklist)
                 # functionlist_g.append(eachfunc)
 
-    if (args.func == None) and (args.range == -1):
+    if (args.func == None) and (args.range == ''):
         functionlist_g = bv.functions
         allfuncs = True
 
     # if we are getting some resursive stuff
-    if (args.recursive != None) and (allfuncs == False):
+    if (args.recursive != -1) and (allfuncs == False):
         functionlist_g_tmp = functionlist_g.copy()
         for func in functionlist_g_tmp:
             print("recursing on ", func)
